@@ -5,7 +5,7 @@ const execAsync = promisify(exec);
 
 export type RecorderMode = "idle" | "recording" | "instant-replay";
 
-export type CaptureSource = 
+export type CaptureSource =
   | { type: "current-monitor" }
   | { type: "monitor"; id: string }
   | { type: "window" };
@@ -18,21 +18,17 @@ export interface RecorderOptions {
   audioInput?: string;
   saveLocation: string;
   bufferSize?: number;
+  gsrPath?: string;
 }
 
-async function getMonitorResolution(monitorId?: string): Promise<string | null> {
+function getGsrPath(customPath?: string): string {
+  return customPath || "gpu-screen-recorder";
+}
+
+async function getMonitorResolution(monitorId?: string, gsrPath?: string): Promise<string | null> {
   try {
-    const hyprland = await checkHyprland();
-    if (hyprland && !monitorId) {
-      const { stdout } = await execAsync("hyprctl monitors -j 2>/dev/null || true");
-      const monitors = JSON.parse(stdout);
-      if (monitors && monitors.length > 0) {
-        const focused = monitors.find((m: { focused: boolean }) => m.focused);
-        const monitor = focused || monitors[0];
-        return `${monitor.width}x${monitor.height}`;
-      }
-    }
-    const { stdout } = await execAsync("gpu-screen-recorder --list-monitors 2>/dev/null || true");
+    const cmd = `${getGsrPath(gsrPath)} --list-monitors 2>/dev/null || true`;
+    const { stdout } = await execAsync(cmd);
     const lines = stdout.trim().split("\n");
     for (const line of lines) {
       const [id, res] = line.split("|");
@@ -61,16 +57,25 @@ async function getCurrentMonitor(): Promise<string | null> {
         return monitor.name;
       }
     }
+
+    const niri = await checkNiri();
+    if (niri) {
+      const { stdout } = await execAsync("niri msg -j focused-output | jq -r .name 2>/dev/null");
+      if (stdout.trim()) return stdout.trim();
+    }
+
     const sway = await checkSway();
     if (sway) {
       const { stdout } = await execAsync("swaymsg -t get_outputs | jq -r '.[] | select(.focused) | .name' 2>/dev/null");
       if (stdout.trim()) return stdout.trim();
     }
+
     const { stdout } = await execAsync("gpu-screen-recorder --list-monitors 2>/dev/null | head -1");
     const line = stdout.trim().split("\n")[0];
     if (line && line.includes("|")) {
       return line.split("|")[0];
     }
+
     return null;
   } catch {
     return null;
@@ -97,12 +102,13 @@ export async function buildRecordingCommand(options: RecorderOptions): Promise<s
     throw new Error("No capture target specified. Please select a monitor or window.");
   }
   let resolution: string | null = null;
-  resolution = await getMonitorResolution(target);
+  resolution = await getMonitorResolution(target, options.gsrPath);
   const sizeArg = resolution ? `-s ${resolution}` : "";
   const audioArg = options.audioInput ? `-a "${options.audioInput}"` : "";
   const outputPath = `${options.saveLocation}/$(date +%Y-%m-%d_%H-%M-%S).mp4`;
-  
-  return `gpu-screen-recorder -w ${target} ${sizeArg} -c mp4 -q ${options.quality} ${audioArg} -f 60 -o "${outputPath}"`;
+  const gsr = getGsrPath(options.gsrPath);
+
+  return `${gsr} -w ${target} ${sizeArg} -c mp4 -q ${options.quality} ${audioArg} -f 60 -df no -o "${outputPath}"`;
 }
 
 export async function buildInstantReplayCommand(options: RecorderOptions): Promise<string> {
@@ -117,16 +123,13 @@ export async function buildInstantReplayCommand(options: RecorderOptions): Promi
     throw new Error("No capture target specified. Please select a monitor or window.");
   }
   let resolution: string | null = null;
-  resolution = await getMonitorResolution(target);
+  resolution = await getMonitorResolution(target, options.gsrPath);
   const sizeArg = resolution ? `-s ${resolution}` : "";
   const audioArg = options.audioInput ? `-a "${options.audioInput}"` : "";
-  const outputPath = `${options.saveLocation}/instant_replay_$(date +%Y-%m-%d_%H-%M-%S).mp4`;
-  
-  return `gpu-screen-recorder -w ${target} ${sizeArg} -c mp4 -q ${options.quality} ${audioArg} -f 60 -r ${options.bufferSize} -o "${outputPath}"`;
-}
+  const outputDir = `"${options.saveLocation}"`;
+  const gsr = getGsrPath(options.gsrPath);
 
-export function buildSaveReplayCommand(): string {
-  return "gpu-screen-recorder -s";
+  return `${gsr} -w ${target} ${sizeArg} -c mp4 -q ${options.quality} ${audioArg} -f 60 -r ${options.bufferSize} -df no -ro ${outputDir}`;
 }
 
 export interface AudioDevice {
@@ -134,9 +137,10 @@ export interface AudioDevice {
   name: string;
 }
 
-export async function getAudioDevices(): Promise<AudioDevice[]> {
+export async function getAudioDevices(gsrPath?: string): Promise<AudioDevice[]> {
   try {
-    const { stdout } = await execAsync("gpu-screen-recorder --list-audio-devices 2>/dev/null || echo ''");
+    const gsr = getGsrPath(gsrPath);
+    const { stdout } = await execAsync(`${gsr} --list-audio-devices 2>/dev/null || echo ''`);
     const devices: AudioDevice[] = [];
     for (const line of stdout.trim().split("\n")) {
       if (!line) continue;
@@ -156,9 +160,10 @@ export interface ApplicationAudio {
   name: string;
 }
 
-export async function getApplicationAudio(): Promise<ApplicationAudio[]> {
+export async function getApplicationAudio(gsrPath?: string): Promise<ApplicationAudio[]> {
   try {
-    const { stdout } = await execAsync("gpu-screen-recorder --list-application-audio 2>/dev/null || echo ''");
+    const gsr = getGsrPath(gsrPath);
+    const { stdout } = await execAsync(`${gsr} --list-application-audio 2>/dev/null || echo ''`);
     const apps: ApplicationAudio[] = [];
     for (const line of stdout.trim().split("\n")) {
       if (!line || line.includes("|")) continue;
@@ -173,10 +178,31 @@ export async function getApplicationAudio(): Promise<ApplicationAudio[]> {
   }
 }
 
+export interface Monitor {
+  id: string;
+  resolution: string;
+}
+
+export async function getMonitors(gsrPath?: string): Promise<Monitor[]> {
+  try {
+    const gsr = getGsrPath(gsrPath);
+    const { stdout } = await execAsync(`${gsr} --list-monitors 2>/dev/null || echo ''`);
+    const monitors: Monitor[] = [];
+    for (const line of stdout.trim().split("\n")) {
+      if (!line || !line.includes("|")) continue;
+      const [id, resolution] = line.split("|");
+      if (id && resolution) {
+        monitors.push({ id, resolution });
+      }
+    }
+    return monitors;
+  } catch {
+    return [];
+  }
+}
+
 export async function startRecording(options: RecorderOptions): Promise<{ success: boolean; error?: string }> {
   const command = await buildRecordingCommand(options);
-  console.log("Starting recording with command:", command);
-  
   return new Promise((resolve) => {
     const fullCommand = `env WAYLAND_DISPLAY="$WAYLAND_DISPLAY" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" nohup ${command} > /dev/null 2>&1 &`;
     exec(fullCommand, (error, stdout, stderr) => {
@@ -193,8 +219,6 @@ export async function startRecording(options: RecorderOptions): Promise<{ succes
 
 export async function startInstantReplay(options: RecorderOptions): Promise<{ success: boolean; error?: string }> {
   const command = await buildInstantReplayCommand(options);
-  console.log("Starting instant replay with command:", command);
-  
   return new Promise((resolve) => {
     const fullCommand = `env WAYLAND_DISPLAY="$WAYLAND_DISPLAY" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" nohup ${command} > /dev/null 2>&1 &`;
     exec(fullCommand, (error, stdout, stderr) => {
@@ -210,16 +234,18 @@ export async function startInstantReplay(options: RecorderOptions): Promise<{ su
 }
 
 export async function saveInstantReplay(): Promise<{ success: boolean; error?: string }> {
-  try {
-    const { stdout, stderr } = await execAsync("gpu-screen-recorder -s");
-    if (stderr && !stderr.includes("Saved")) {
-      return { success: false, error: stderr };
-    }
-    return { success: true };
-  } catch (error: unknown) {
-    const err = error as { stderr?: string; message?: string };
-    return { success: false, error: err.stderr || err.message || String(error) };
-  }
+  return new Promise((resolve) => {
+    const command = "pkill -SIGUSR1 gpu-screen-recorder 2>/dev/null || killall -SIGUSR1 gpu-screen-recorder 2>/dev/null || true";
+    exec(command, (error) => {
+      if (error) {
+        console.error("Save replay error:", error.message);
+        resolve({ success: false, error: error.message });
+      } else {
+        console.log("Replay saved successfully");
+        resolve({ success: true });
+      }
+    });
+  });
 }
 
 export async function stopRecording(): Promise<{ success: boolean; error?: string }> {
@@ -239,7 +265,6 @@ export async function getRecorderStatus(): Promise<RecorderMode> {
       return "idle";
     }
     const { stdout } = await execAsync(`ps -p ${pid} -o args= 2>/dev/null || echo ""`);
-    console.log("getRecorderStatus args:", stdout);
     if (stdout.includes("-r ") || stdout.includes("--replay")) {
       return "instant-replay";
     }
@@ -257,6 +282,15 @@ export async function isRecordingActive(): Promise<boolean> {
 async function checkHyprland(): Promise<boolean> {
   try {
     await execAsync("hyprctl version");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function checkNiri(): Promise<boolean> {
+  try {
+    await execAsync("niri msg version");
     return true;
   } catch {
     return false;

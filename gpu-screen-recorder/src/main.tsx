@@ -5,9 +5,10 @@ import {
   Form,
   showToast,
   Toast,
-  getPreferenceValues,
   Icon,
   Cache,
+  Keyboard,
+  getPreferenceValues,
 } from "@vicinae/api";
 import {
   type RecorderMode,
@@ -21,22 +22,20 @@ import {
   saveInstantReplay,
   getAudioDevices,
   getApplicationAudio,
+  getMonitors,
 } from "./recorder";
 
 type Mode = "recording" | "instant-replay";
 
 interface Preferences {
-  "default-monitor": string;
-  "default-replay-buffer-size": string;
-  "quality-preset": QualityPreset;
-  "audio-input": string;
-  "save-location": string;
+  "gsr-path": string;
 }
 
 interface CachedSettings {
   mode: Mode;
   captureSourceType: "current-monitor" | "monitor" | "window";
   monitorId: string;
+  resolution: string;
   quality: QualityPreset;
   audioInput: string;
   saveLocation: string;
@@ -47,6 +46,7 @@ const DEFAULT_SETTINGS: CachedSettings = {
   mode: "recording",
   captureSourceType: "current-monitor",
   monitorId: "",
+  resolution: "",
   quality: "high",
   audioInput: "",
   saveLocation: `${process.env.HOME}/Videos`,
@@ -87,22 +87,22 @@ function StatusDisplay({ mode }: { mode: RecorderMode }) {
 }
 
 export default function MainView() {
-  const preferences = getPreferenceValues<Preferences>();
   const initialSettings = useMemo(() => loadSettings(), []);
 
   const [mode, setMode] = useState<Mode>(initialSettings.mode);
   const [status, setStatus] = useState<RecorderMode>("idle");
   const [isLoading, setIsLoading] = useState(true);
-  const [isProcessing, setIsProcessing] = useState(false);
 
   const [captureSourceType, setCaptureSourceType] = useState<"current-monitor" | "monitor" | "window">(initialSettings.captureSourceType);
   const [monitorId, setMonitorId] = useState(initialSettings.monitorId);
+  const [resolution, setResolution] = useState(initialSettings.resolution);
   const [quality, setQuality] = useState<QualityPreset>(initialSettings.quality);
   const [audioInput, setAudioInput] = useState(initialSettings.audioInput);
   const [saveLocation, setSaveLocation] = useState(initialSettings.saveLocation);
   const [bufferSize, setBufferSize] = useState(initialSettings.bufferSize);
   const [audioDevices, setAudioDevices] = useState<Array<{ id: string; name: string }>>([]);
   const [appAudio, setAppAudio] = useState<Array<{ id: string; name: string }>>([]);
+  const [monitors, setMonitors] = useState<Array<{ id: string; resolution: string }>>([]);
 
   const fetchStatus = useCallback(async () => {
     const currentStatus = await getRecorderStatus();
@@ -121,12 +121,20 @@ export default function MainView() {
 
   useEffect(() => {
     async function fetchAudio() {
-      const [devices, apps] = await Promise.all([
-        getAudioDevices(),
-        getApplicationAudio(),
+      const preferences = getPreferenceValues<Preferences>();
+      const gsrPath = preferences["gsr-path"] || undefined;
+      const [devices, apps, monitorList] = await Promise.all([
+        getAudioDevices(gsrPath),
+        getApplicationAudio(gsrPath),
+        getMonitors(gsrPath),
       ]);
       setAudioDevices(devices);
       setAppAudio(apps);
+      setMonitors(monitorList);
+      if (monitorList.length > 0 && !initialSettings.monitorId) {
+        setMonitorId(monitorList[0].id);
+        setResolution(monitorList[0].resolution);
+      }
     }
     fetchAudio();
   }, []);
@@ -135,17 +143,19 @@ export default function MainView() {
     mode,
     captureSourceType,
     monitorId,
+    resolution,
     quality,
     audioInput,
     saveLocation,
     bufferSize,
-  }), [mode, captureSourceType, monitorId, quality, audioInput, saveLocation, bufferSize]);
+  }), [mode, captureSourceType, monitorId, resolution, quality, audioInput, saveLocation, bufferSize]);
 
   const updateSetting = useCallback((key: keyof CachedSettings, value: unknown) => {
     switch (key) {
       case "mode": setMode(value as Mode); break;
       case "captureSourceType": setCaptureSourceType(value as "current-monitor" | "monitor" | "window"); break;
       case "monitorId": setMonitorId(value as string); break;
+      case "resolution": setResolution(value as string); break;
       case "quality": setQuality(value as QualityPreset); break;
       case "audioInput": setAudioInput(value as string); break;
       case "saveLocation": setSaveLocation(value as string); break;
@@ -159,14 +169,13 @@ export default function MainView() {
     if (captureSourceType === "current-monitor") {
       return { type: "current-monitor" };
     } else if (captureSourceType === "monitor") {
-      return { type: "monitor", id: monitorId || preferences["default-monitor"] };
+      return { type: "monitor", id: monitorId };
     } else {
       return { type: "window" };
     }
   };
 
   const handleStart = async () => {
-    setIsProcessing(true);
     try {
       if (status !== "idle") {
         await showToast({
@@ -174,17 +183,20 @@ export default function MainView() {
           title: "Recorder is active",
           message: "Stop the current recording first",
         });
-        setIsProcessing(false);
         return;
       }
 
       const effectiveBufferSize = bufferSize || 60;
+      const preferences = getPreferenceValues<Preferences>();
+      const gsrPath = preferences["gsr-path"] || undefined;
       const options: RecorderOptions = {
         captureSource: getCaptureSource(),
         quality,
+        resolution: resolution || undefined,
         audioInput: audioInput || undefined,
         saveLocation,
         bufferSize: mode === "instant-replay" ? effectiveBufferSize : undefined,
+        gsrPath,
       };
 
       let result: { success: boolean; error?: string };
@@ -215,11 +227,9 @@ export default function MainView() {
         message: String(error),
       });
     }
-    setIsProcessing(false);
   };
 
   const handleStop = async () => {
-    setIsProcessing(true);
     try {
       const result = await stopRecording();
       if (result.success) {
@@ -243,11 +253,9 @@ export default function MainView() {
         message: String(error),
       });
     }
-    setIsProcessing(false);
   };
 
   const handleSaveReplay = async () => {
-    setIsProcessing(true);
     try {
       const result = await saveInstantReplay();
       if (result.success) {
@@ -270,7 +278,6 @@ export default function MainView() {
         message: String(error),
       });
     }
-    setIsProcessing(false);
   };
 
   const getPrimaryActionTitle = () => {
@@ -303,14 +310,12 @@ export default function MainView() {
               title="Save Instant Replay"
               onAction={handleSaveReplay}
               icon={Icon.Download}
-              shortcut={{ modifiers: ["cmd"], key: "s" }}
+              shortcut={Keyboard.Shortcut.Common.Save}
             />
           )}
         </ActionPanel>
       }
     >
-      <Form.Description title="" text="GPU Screen Recorder Control Panel" />
-
       <StatusDisplay mode={status} />
 
       <Form.Separator />
@@ -355,13 +360,16 @@ export default function MainView() {
       </Form.Dropdown>
 
       {captureSourceType === "monitor" && (
-        <Form.TextField
+        <Form.Dropdown
           id="monitor-id"
-          title="Monitor ID"
-          placeholder={preferences["default-monitor"] || "DP-1"}
+          title="Monitor"
           value={monitorId}
           onChange={(value) => updateSetting("monitorId", value)}
-        />
+        >
+          {monitors.map((m) => (
+            <Form.Dropdown.Item key={m.id} value={m.id} title={`${m.id} (${m.resolution})`} />
+          ))}
+        </Form.Dropdown>
       )}
 
       <Form.Dropdown
@@ -380,7 +388,11 @@ export default function MainView() {
         id="audio-input"
         title="Audio"
         value={audioInput}
-        onChange={(value) => updateSetting("audioInput", value)}
+        onChange={(value) => {
+          if (value && !value.startsWith("__")) {
+            updateSetting("audioInput", value);
+          }
+        }}
       >
         <Form.Dropdown.Item value="" title="None" />
         {audioDevices.length > 0 && (
@@ -399,12 +411,13 @@ export default function MainView() {
         )}
       </Form.Dropdown>
 
-      <Form.TextField
+      <Form.FilePicker
         id="save-location"
         title="Save to"
-        placeholder="~/Videos"
-        value={saveLocation}
-        onChange={(value) => updateSetting("saveLocation", value)}
+        value={saveLocation ? [saveLocation] : []}
+        onChange={(value) => updateSetting("saveLocation", value[0] || "")}
+        canChooseDirectories={true}
+        canChooseFiles={false}
       />
     </Form>
   );

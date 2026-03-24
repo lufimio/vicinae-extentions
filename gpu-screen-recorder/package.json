@@ -10,7 +10,7 @@
   "author": "lufimio",
   "contributors": [],
   "pastContributors": [],
-  "icon": "extension_icon.png",
+  "icon": "gpu-screen-recorder-logo.png",
   "commands": [
     {
       "name": "main",
@@ -62,66 +62,7 @@
       "mode": "no-view"
     }
   ],
-  "preferences": [
-    {
-      "name": "default-monitor",
-      "title": "Default Monitor",
-      "description": "Default monitor to record when using current monitor detection",
-      "type": "textfield",
-      "required": false,
-      "placeholder": "e.g., DP-1, HDMI-A-1"
-    },
-    {
-      "name": "default-replay-buffer-size",
-      "title": "Default Replay Buffer Size",
-      "description": "Default instant replay buffer size in seconds",
-      "type": "textfield",
-      "required": false,
-      "default": "60"
-    },
-    {
-      "name": "quality-preset",
-      "title": "Quality Preset",
-      "description": "Video quality preset for recording",
-      "type": "dropdown",
-      "default": "high",
-      "required": false,
-      "data": [
-        {
-          "title": "Medium",
-          "value": "medium"
-        },
-        {
-          "title": "High",
-          "value": "high"
-        },
-        {
-          "title": "Very High",
-          "value": "very_high"
-        },
-        {
-          "title": "Ultra",
-          "value": "ultra"
-        }
-      ]
-    },
-    {
-      "name": "audio-input",
-      "title": "Audio Input",
-      "description": "Audio source to record (leave empty for no audio)",
-      "type": "textfield",
-      "required": false,
-      "placeholder": "e.g., default_output, default_input"
-    },
-    {
-      "name": "save-location",
-      "title": "Save Location",
-      "description": "Default directory for saved recordings",
-      "type": "textfield",
-      "required": false,
-      "placeholder": "e.g., ~/Videos"
-    }
-  ],
+  "preferences": [],
   "scripts": {
     "build": "vici build",
     "dev": "vici develop",
